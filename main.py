@@ -1,6 +1,6 @@
-# main.py
 import io
-from fastapi import FastAPI, UploadFile, File, Form
+import json
+from fastapi import FastAPI, UploadFile, Request, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import cv2
@@ -193,44 +193,57 @@ DIP_CLASSES = {
 }
 
 @app.post("/process")
-async def process_image(
-    method: str = Form(...),
-    gamma: float = Form(None),
-    thresh: int = Form(None),
-    threshold1: int = Form(None),
-    threshold2: int = Form(None),
-    k: float = Form(None),
-    window_size: int = Form(None),
-    kernel_size: int = Form(None),
-    upload: UploadFile = File(...)
-):
+async def process_image(request: Request, upload: UploadFile = File(...)):
+    # Read form data dynamically
+    form = await request.form()
+    # Extract methods list
+    methods_field = form.get('methods')
+    try:
+        methods = json.loads(methods_field) if methods_field else []
+    except json.JSONDecodeError:
+        return {"error": "Invalid methods JSON"}
+
+    # Read uploaded image
     contents = await upload.read()
     np_arr = np.frombuffer(contents, np.uint8)
     img = cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED)
     if img is None:
         return {"error": "cannot decode image"}
 
-    if method not in DIP_CLASSES:
-        return {"error": f"Unknown method '{method}'"}
+    # Apply each method in sequence
+    output = img
+    for method in methods:
+        if method not in DIP_CLASSES:
+            return {"error": f"Unknown method '{method}'"}
+        cls = DIP_CLASSES[method]()
+        # Collect method-specific params
+        kwargs = {}
+        # Known param suffixes
+        for suffix in ["gamma", "thresh", "threshold1", "threshold2", "k", "window_size", "kernel_size"]:
+            field = f"{method}_{suffix}"
+            if field in form:
+                val = form.get(field)
+                # convert to number
+                try:
+                    if suffix in ['gamma', 'k']:
+                        kwargs[suffix] = float(val)
+                    else:
+                        kwargs[suffix] = int(val)
+                except:
+                    pass
+        # Process
+        try:
+            output = cls.process(output, **kwargs)
+        except Exception as e:
+            return {"error": f"processing '{method}' failed: {e}"}
 
-    cls = DIP_CLASSES[method]()
-    kwargs = {}
-    for param in ("gamma", "thresh", "threshold1", "threshold2", "k", "window_size", "kernel_size"):
-        val = locals().get(param)
-        if val is not None:
-            kwargs[param] = val
-
-    try:
-        out = cls.process(img, **kwargs)
-    except Exception as e:
-        return {"error": f"processing failed: {e}"}
-
-    if out.ndim == 2:
-        fmt = cv2.IMWRITE_PNG_COMPRESSION
-        success, buf = cv2.imencode(".png", out, [fmt, 3])
+    # Encode final output
+    if output.ndim == 2:
+        success, buf = cv2.imencode('.png', output)
     else:
-        success, buf = cv2.imencode(".png", out)
+        success, buf = cv2.imencode('.png', output)
     if not success:
         return {"error": "could not encode result"}
 
     return StreamingResponse(io.BytesIO(buf.tobytes()), media_type="image/png")
+
