@@ -29,7 +29,17 @@ class Greyscale(DIPMethod):
     name = "greyscale"
     def process(self, image, **kwargs):
         return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    
+class HSV(DIPMethod):
+    name = "HSV"
+    def process(self, image, **kwargs):
+        return cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
 
+class HLS(DIPMethod):
+    name = "HLS"
+    def process(self, image, **kwargs):
+        return cv2.cvtColor(image, cv2.COLOR_BGR2HLS)
+    
 class Log(DIPMethod):
     name = "logarithmic"
     def process(self, image, **kwargs):
@@ -122,6 +132,30 @@ class Sharpen(DIPMethod):
         sharp = cv2.addWeighted(image, 1.5, blurred, -0.5, 0)
         return np.uint8(np.clip(sharp, 0, 255))
 
+class Segment(DIPMethod):
+    name = "segment"
+    def process(self, image, **kwargs):
+        if image.ndim != 2:
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        hist = cv2.calcHist([image], [0], None, [256], [0, 256]).flatten()
+        peaks, _ = find_peaks(hist, height=100)
+        if len(peaks) >= 2:
+            valley = int((peaks[0] + peaks[1]) / 2)
+            _, image = cv2.threshold(image, valley, 255, cv2.THRESH_BINARY)
+        return image
+    
+class MultiSegment(DIPMethod):
+    name ="multisegment"
+    def process(self, image):
+        if image.ndim != 2:
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        pixels = image.reshape((-1, 1)).astype(np.float32)
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.2)
+        k = 3
+        _, labels, centers = cv2.kmeans(pixels, k, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
+        segmented = centers[labels.flatten()].reshape(image.shape)
+        return np.uint8(segmented)
+
 class AdaptiveThreshold(DIPMethod):
     name = "adaptive_thresh"
     def process(self, image, **kwargs):
@@ -136,6 +170,34 @@ class BinaryThreshold(DIPMethod):
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
         _, b = cv2.threshold(gray, thresh, 255, cv2.THRESH_BINARY)
         return b
+
+class Open(DIPMethod):
+    name = "open"
+    def process(self, image, **kwargs):
+        kernel = np.ones((3, 3), np.uint8)
+        opened = cv2.morphologyEx(image, cv2.MORPH_OPEN, kernel)
+        return opened
+    
+class Dilate(DIPMethod):
+    name = "dilate"
+    def process(self, image, **kwargs):
+        kernel = np.ones((3, 3), np.uint8)
+        dilated = cv2.dilate(image, kernel, iterations=1)
+        return dilated
+    
+class Erode(DIPMethod):
+    name = "erode"
+    def process(self, image, **kwargs):
+        kernel = np.ones((3, 3), np.uint8)
+        erroded = cv2.erode(image, kernel, iterations=1)
+        return erroded
+    
+class MorphGradient(DIPMethod):
+    name = "morphgradient"
+    def process(self, image, **kwargs):
+        kernel = np.ones((3, 3), np.uint8)
+        morph_gradient = cv2.morphologyEx(image, cv2.MORPH_GRADIENT, kernel)
+        return morph_gradient
 
 class CannyEdge(DIPMethod):
     name = "canny"
@@ -169,9 +231,22 @@ class Sauvola(DIPMethod):
         gray_f = gray.astype(np.float32)
         thresh = filters.threshold_sauvola(gray_f, window_size=window_size, k=k)
         return np.uint8((gray_f > thresh) * 255)
+    
+class HOG(DIPMethod):
+    name = "HOG"
+    def process(self, image, **kwargs):
+        if image.ndim != 2:
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        _, image_vis = hog(
+            image, orientations=9, pixels_per_cell=(8, 8),
+            cells_per_block=(2, 2), visualize=True, block_norm='L2-Hys'
+        )
+        return image_vis
 
 DIP_CLASSES = {
     Greyscale.name: Greyscale,
+    HSV.name: HSV,
+    HLS.name: HLS,
     Log.name: Log,
     Exp.name: Exp,
     Sqrt.name: Sqrt,
@@ -184,46 +259,46 @@ DIP_CLASSES = {
     GaussianBlur.name: GaussianBlur,
     CLAHE.name: CLAHE,
     Sharpen.name: Sharpen,
+    Segment.name: Segment,
+    MultiSegment.name: MultiSegment,
     AdaptiveThreshold.name: AdaptiveThreshold,
     BinaryThreshold.name: BinaryThreshold,
+    Open.name: Open,
+    Dilate.name: Dilate,
+    Erode.name: Erode,
+    MorphGradient.name: MorphGradient,
     CannyEdge.name: CannyEdge,
     SobelEdge.name: SobelEdge,
     Niblack.name: Niblack,
     Sauvola.name: Sauvola,
+    HOG.name: HOG,
 }
 
 @app.post("/process")
 async def process_image(request: Request, upload: UploadFile = File(...)):
-    # Read form data dynamically
     form = await request.form()
-    # Extract methods list
     methods_field = form.get('methods')
     try:
         methods = json.loads(methods_field) if methods_field else []
     except json.JSONDecodeError:
         return {"error": "Invalid methods JSON"}
 
-    # Read uploaded image
     contents = await upload.read()
     np_arr = np.frombuffer(contents, np.uint8)
     img = cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED)
     if img is None:
         return {"error": "cannot decode image"}
 
-    # Apply each method in sequence
     output = img
     for method in methods:
         if method not in DIP_CLASSES:
             return {"error": f"Unknown method '{method}'"}
         cls = DIP_CLASSES[method]()
-        # Collect method-specific params
         kwargs = {}
-        # Known param suffixes
         for suffix in ["gamma", "thresh", "threshold1", "threshold2", "k", "window_size", "kernel_size"]:
             field = f"{method}_{suffix}"
             if field in form:
                 val = form.get(field)
-                # convert to number
                 try:
                     if suffix in ['gamma', 'k']:
                         kwargs[suffix] = float(val)
@@ -231,13 +306,11 @@ async def process_image(request: Request, upload: UploadFile = File(...)):
                         kwargs[suffix] = int(val)
                 except:
                     pass
-        # Process
         try:
             output = cls.process(output, **kwargs)
         except Exception as e:
             return {"error": f"processing '{method}' failed: {e}"}
 
-    # Encode final output
     if output.ndim == 2:
         success, buf = cv2.imencode('.png', output)
     else:
