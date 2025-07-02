@@ -275,7 +275,7 @@ DIP_CLASSES = {
 }
 
 @app.post("/process")
-async def process_image(request: Request, upload: UploadFile = File(...)):
+async def process_image(request: Request, upload: UploadFile = File(...), upload2: UploadFile = File(None)):
     form = await request.form()
     methods_field = form.get('methods')
     try:
@@ -288,9 +288,45 @@ async def process_image(request: Request, upload: UploadFile = File(...)):
     img = cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED)
     if img is None:
         return {"error": "cannot decode image"}
+    
+    img2 = None
+    
+    if ('add' in methods or
+        'subtract' in methods or
+        'divide' in methods or
+        'multiply' in methods) and upload2 is not None:
+        contents2 = await upload2.read()
+        np_arr2 = np.frombuffer(contents2, np.uint8)
+        img2 = cv2.imdecode(np_arr2, cv2.IMREAD_UNCHANGED)
+        if img2 is None:
+            return {"error": "cannot decode second image"}
+        if img2.shape != img.shape:
+            img2 = cv2.resize(img2, (img.shape[1], img.shape[0]))
 
     output = img
     for method in methods:
+        if method in ('add', 'subtract', 'multiply', 'divide'):
+            if img2 is None:
+                return {"error": f"Second image required for {method}"}
+            if output.ndim == 2 and img2.ndim == 3:
+                img2_proc = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
+            elif output.ndim == 3 and img2.ndim == 2:
+                img2_proc = cv2.cvtColor(img2, cv2.COLOR_GRAY2BGR)
+            else:
+                img2_proc = img2
+
+            if method == 'add':
+                output = cv2.add(output, img2_proc)
+            elif method == 'subtract':
+                output = cv2.subtract(output, img2_proc)
+            elif method == 'multiply':    
+                output = cv2.multiply(output, img2_proc)
+            elif method == 'divide':
+                output = cv2.divide(output, img2_proc, scale=16.0)
+                output = np.clip(output, 0, 255)
+                output = np.uint8(output)
+            continue
+
         if method not in DIP_CLASSES:
             return {"error": f"Unknown method '{method}'"}
         cls = DIP_CLASSES[method]()
