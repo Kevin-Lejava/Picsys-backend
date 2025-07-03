@@ -207,13 +207,13 @@ class CannyEdge(DIPMethod):
 
 class SobelEdge(DIPMethod):
     name = "sobel"
-    def process(self, image, threshold: int = 100, **kwargs):
+    def process(self, image, thresh: int = 100, **kwargs):
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
         sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
         sobely = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
         mag = np.sqrt(sobelx**2 + sobely**2)
         edges = np.zeros_like(mag, dtype=np.uint8)
-        edges[mag > threshold] = 255
+        edges[mag > thresh] = 255
         return edges
 
 class Niblack(DIPMethod):
