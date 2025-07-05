@@ -168,8 +168,8 @@ class BinaryThreshold(DIPMethod):
     name = "binary"
     def process(self, image, thresh: int = 127, **kwargs):
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
-        _, b = cv2.threshold(gray, thresh, 255, cv2.THRESH_BINARY)
-        return b
+        _, img2 = cv2.threshold(gray, thresh, 255, cv2.THRESH_BINARY)
+        return img2
 
 class Open(DIPMethod):
     name = "open"
@@ -242,6 +242,10 @@ class HOG(DIPMethod):
             cells_per_block=(2, 2), visualize=True, block_norm='L2-Hys'
         )
         return image_vis
+class LIPmultiply(DIPMethod):
+    name = "LIPmultiply"
+    def process(self, image, c: float = 1.2, **kwargs):
+        return 255 * (1 - np.power(1 - image / 255, c))
 
 DIP_CLASSES = {
     Greyscale.name: Greyscale,
@@ -272,6 +276,7 @@ DIP_CLASSES = {
     Niblack.name: Niblack,
     Sauvola.name: Sauvola,
     HOG.name: HOG,
+    LIPmultiply.name: LIPmultiply
 }
 
 @app.post("/process")
@@ -294,7 +299,10 @@ async def process_image(request: Request, upload: UploadFile = File(...), upload
     if ('add' in methods or
         'subtract' in methods or
         'divide' in methods or
-        'multiply' in methods) and upload2 is not None:
+        'multiply' in methods or
+        'LIPadd' in methods or
+        'LIPsubtract' in methods or
+        'LIPdivide' in methods) and upload2 is not None:
         contents2 = await upload2.read()
         np_arr2 = np.frombuffer(contents2, np.uint8)
         img2 = cv2.imdecode(np_arr2, cv2.IMREAD_UNCHANGED)
@@ -305,7 +313,7 @@ async def process_image(request: Request, upload: UploadFile = File(...), upload
 
     output = img
     for method in methods:
-        if method in ('add', 'subtract', 'multiply', 'divide'):
+        if method in ('add', 'subtract', 'multiply', 'divide', 'LIPadd', 'LIPsubtract', 'LIPdivide'):
             if img2 is None:
                 return {"error": f"Second image required for {method}"}
             if output.ndim == 2 and img2.ndim == 3:
@@ -325,18 +333,34 @@ async def process_image(request: Request, upload: UploadFile = File(...), upload
                 output = cv2.divide(output, img2_proc, scale=16.0)
                 output = np.clip(output, 0, 255)
                 output = np.uint8(output)
+            elif method == 'LIPadd':
+                output = img + img2 - ((img * img2) / 255)
+            elif method == 'LIPsubtract':
+                output = 255 * ((img.astype(np.float32) - img2_proc.astype(np.float32)) / (255 - img2_proc.astype(np.float32)))
+                output = np.nan_to_num(output, nan=0.0, posinf=255, neginf=0)
+                output = np.clip(output, 0, 255).astype(np.uint8)
+            elif method == 'LIPdivide':
+                img_f = img.astype(np.float32) / 255
+                img2_f = img2_proc.astype(np.float32) / 255
+                la = np.log1p(-img_f)
+                lb = np.log1p(-img2_f)
+                denom = la + lb
+                j = np.where(denom != 0, la / denom, 0.5)
+                result = 255 * (1 - np.power(1 - img_f, j) * np.power(1 - img2_f, 1 - j))
+                output = np.nan_to_num(result, nan=0.0, posinf=255, neginf=0)
+                output = np.clip(output, 0, 255).astype(np.uint8)
             continue
 
         if method not in DIP_CLASSES:
             return {"error": f"Unknown method '{method}'"}
         cls = DIP_CLASSES[method]()
         kwargs = {}
-        for suffix in ["gamma", "thresh", "threshold1", "threshold2", "k", "window_size", "kernel_size"]:
+        for suffix in ["gamma", "thresh", "threshold1", "threshold2", "k", "window_size", "kernel_size", "c"]:
             field = f"{method}_{suffix}"
             if field in form:
                 val = form.get(field)
                 try:
-                    if suffix in ['gamma', 'k']:
+                    if suffix in ['gamma', 'k', 'c']:
                         kwargs[suffix] = float(val)
                     else:
                         kwargs[suffix] = int(val)
