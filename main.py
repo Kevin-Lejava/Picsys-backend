@@ -245,7 +245,7 @@ class HOG(DIPMethod):
 class LIPmultiply(DIPMethod):
     name = "LIPmultiply"
     def process(self, image, c: float = 1.2, **kwargs):
-        return 255 * (1 - np.power(1 - image / 255, c))
+        return 255-255 * np.power(1 - image / 255, c)
 
 DIP_CLASSES = {
     Greyscale.name: Greyscale,
