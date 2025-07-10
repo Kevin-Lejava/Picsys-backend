@@ -166,7 +166,7 @@ class AdaptiveThreshold(DIPMethod):
 
 class BinaryThreshold(DIPMethod):
     name = "binary"
-    def process(self, image, thresh: int = 127, **kwargs):
+    def process(self, image, thresh: int = 128, **kwargs):
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
         _, img2 = cv2.thresh(gray, thresh, 255, cv2.THRESH_BINARY)
         return img2
@@ -249,12 +249,12 @@ class LIPscaleMult(DIPMethod):
 
 class NLE(DIPMethod):
     name = "NLE"
-    def process(self, image, enhance: int = 126, amp: int = 1, NLEAlpha: float = 0.0, NLEBeta: float = 1.0, **kwargs):
-        
+    def process(self, image, enhance: int = 128, amp: int = 1, NLEAlpha: float = 0.1, NLEBeta: float = 0.1, **kwargs):
         if image.ndim == 3:
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(np.float32)
         else:
-            gray = orig.copy()
+            gray = image.astype(np.float32)
+        orig = gray.copy()
         orig = gray.astype(np.float32)
         kernel = np.ones((5, 5), dtype=np.float32) / 25.0
         local_mean = convolve(gray, kernel)
