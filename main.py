@@ -8,12 +8,13 @@ import numpy as np
 from skimage.feature import hog
 from skimage import filters
 from scipy.signal import find_peaks
+from scipy.ndimage import convolve
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://kevin-lejava.github.io"],
+    allow_origins=["https://kevin-lejava.github.io", "http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -21,12 +22,11 @@ app.add_middleware(
 
 class DIPMethod:
     name: str
-
     def process(self, image: np.ndarray, **kwargs) -> np.ndarray:
         raise NotImplementedError
 
-class Greyscale(DIPMethod):
-    name = "greyscale"
+class Grayscale(DIPMethod):
+    name = "grayscale"
     def process(self, image, **kwargs):
         return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     
@@ -141,7 +141,7 @@ class Segment(DIPMethod):
         peaks, _ = find_peaks(hist, height=100)
         if len(peaks) >= 2:
             valley = int((peaks[0] + peaks[1]) / 2)
-            _, image = cv2.threshold(image, valley, 255, cv2.THRESH_BINARY)
+            _, image = cv2.thresh(image, valley, 255, cv2.THRESH_BINARY)
         return image
     
 class MultiSegment(DIPMethod):
@@ -168,7 +168,7 @@ class BinaryThreshold(DIPMethod):
     name = "binary"
     def process(self, image, thresh: int = 127, **kwargs):
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
-        _, img2 = cv2.threshold(gray, thresh, 255, cv2.THRESH_BINARY)
+        _, img2 = cv2.thresh(gray, thresh, 255, cv2.THRESH_BINARY)
         return img2
 
 class Open(DIPMethod):
@@ -242,13 +242,100 @@ class HOG(DIPMethod):
             cells_per_block=(2, 2), visualize=True, block_norm='L2-Hys'
         )
         return image_vis
-class LIPmultiply(DIPMethod):
-    name = "LIPmultiply"
-    def process(self, image, c: float = 1.2, **kwargs):
-        return 255-255 * np.power(1 - image / 255, c)
+class LIPscaleMult(DIPMethod):
+    name = "LIPscaleMult"
+    def process(self, image, const: float = 1.2, **kwargs):
+        return 255-255 * np.power(1 - image / 255, const)
+
+class NLE(DIPMethod):
+    name = "NLE"
+    def process(self, image, enhance: int = 126, amp: int = 1, NLEAlpha: float = 0.0, NLEBeta: float = 1.0, **kwargs):
+        
+        if image.ndim == 3:
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        else:
+            gray = orig.copy()
+        orig = gray.astype(np.float32)
+        kernel = np.ones((5, 5), dtype=np.float32) / 25.0
+        local_mean = convolve(gray, kernel)
+        lam = enhance + (255.0 - enhance) * (local_mean / 255.0)
+        tau = gray
+        denom = (2.0 * tau - lam + 1.0) + 1e-6
+        Ie = tau - (2.0 * tau**2) / denom
+        Ie = np.nan_to_num(Ie, nan=0.0, posinf=0.0, neginf=0.0)
+        output = orig + (NLEAlpha * NLEBeta * Ie * amp)
+        output = np.clip(output, 0, 255).astype(np.uint8)
+        return output
+    
+class DHVT(DIPMethod):
+    name = "DHVT"
+    def process(self, image, dhvtPlane: int = 1, **kwargs):
+        if image.ndim == 3:
+            X = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        else:
+            X = image.copy()
+        Xf = X.astype(np.float32)
+        mean4 = convolve(Xf, np.ones((3,3), dtype=np.float32)/9.0)
+        BT = Xf.max() - Xf.min()
+        Gx = cv2.Sobel(Xf, cv2.CV_32F, 1, 0)
+        Gy = cv2.Sobel(Xf, cv2.CV_32F, 0, 1)
+        G  = np.sqrt(Gx**2 + Gy**2)
+        K = np.percentile(G, 80)
+        if (dhvtPlane == 1):
+            return np.where((np.abs(Xf - mean4) >= 0.0) & (G >= K), Xf, 0)
+        elif(dhvtPlane == 2):
+            return np.where((np.abs(Xf - mean4) >= 0.1) & (G >= K), Xf, 0)
+        elif(dhvtPlane == 3):
+            return np.where((np.abs(Xf - mean4) >= 0.9) & (G >= K), Xf, 0)
+        elif(dhvtPlane == 4):
+            Im1 = np.where((np.abs(Xf - mean4) >= 0.0) & (G >= K), Xf, 0)
+            Im2 = np.where((np.abs(Xf - mean4) >= 0.1) & (G >= K), Xf, 0)
+            Im3 = np.where((np.abs(Xf - mean4) >= 0.9) & (G >= K), Xf, 0)
+            mask = ~((Im1>0) | (Im2>0) | (Im3>0))
+            Im4  = np.where(mask, Xf, 0)
+            return Im4
+        
+class LOGReduction(DIPMethod):
+    name = "LOGReduction"
+    def process(self, image, logralpha: float = 0.1, logrbeta: float = 0.1, logrlam: float = 0.1, **kwargs):
+        if image.ndim == 3:
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = image.copy()
+        gray_f = gray.astype(np.float32)
+        F = np.fft.fft2(gray_f)
+        Xmag = np.abs(F)
+        O = (1 + logrlam) * (np.power(Xmag, logralpha) * np.log1p(logrbeta * Xmag))
+        phase = np.angle(F)
+        F_log = O * np.exp(1j * phase)
+        img_rec = np.fft.ifft2(F_log)
+        img_rec = np.real(img_rec)
+        img_rec -= img_rec.min()
+        img_rec = img_rec / img_rec.max() * 255.0
+        output = np.clip(img_rec, 0, 255).astype(np.uint8)
+        return output
+    
+class LIPBiHistEq(DIPMethod):
+    name = "LIPBiHistEq"
+    def process(self, image, thresh: int = 128, **kwargs):
+        thresh = int(thresh)
+        image = image.astype(np.uint8)
+        I1 = np.minimum(image, thresh)
+        I2 = np.clip(image - thresh, 0, 255 - thresh)
+        hist1 = np.bincount(I1.ravel(), minlength=thresh+1)
+        cdf1  = hist1.cumsum().astype(np.float64) / hist1.sum()
+        hist2 = np.bincount(I2.ravel(), minlength=(255-thresh)+1)
+        cdf2  = hist2.cumsum().astype(np.float64) / hist2.sum()
+        lut = np.zeros(256, dtype=np.uint8)
+        for i in range(256):
+            if i <= thresh:
+                lut[i] = np.uint8(cdf1[i] * thresh)
+            else:
+                lut[i] = np.uint8(cdf2[i-thresh] * (255-thresh) + thresh)
+        return lut[image]
 
 DIP_CLASSES = {
-    Greyscale.name: Greyscale,
+    Grayscale.name: Grayscale,
     HSV.name: HSV,
     HLS.name: HLS,
     Log.name: Log,
@@ -276,8 +363,18 @@ DIP_CLASSES = {
     Niblack.name: Niblack,
     Sauvola.name: Sauvola,
     HOG.name: HOG,
-    LIPmultiply.name: LIPmultiply
+    LIPscaleMult.name: LIPscaleMult,
+    NLE.name: NLE,
+    DHVT.name: DHVT,
+    LOGReduction.name: LOGReduction,
+    LIPBiHistEq.name: LIPBiHistEq
 }
+
+def lip_phi_g(a, M):
+    return -M * np.log(1 - a / M)
+
+def lip_phi_inverse(a, M):
+    return -M * (1 - np.exp(-a / M))
 
 @app.post("/process")
 async def process_image(request: Request, upload: UploadFile = File(...), upload2: UploadFile = File(None)):
@@ -302,6 +399,7 @@ async def process_image(request: Request, upload: UploadFile = File(...), upload
         'multiply' in methods or
         'LIPadd' in methods or
         'LIPsubtract' in methods or
+        'LIPmultiply' in methods or
         'LIPdivide' in methods) and upload2 is not None:
         contents2 = await upload2.read()
         np_arr2 = np.frombuffer(contents2, np.uint8)
@@ -313,7 +411,7 @@ async def process_image(request: Request, upload: UploadFile = File(...), upload
 
     output = img
     for method in methods:
-        if method in ('add', 'subtract', 'multiply', 'divide', 'LIPadd', 'LIPsubtract', 'LIPdivide'):
+        if method in ('add', 'subtract', 'multiply', 'divide', 'LIPadd', 'LIPsubtract','LIPmultiply', 'LIPdivide'):
             if img2 is None:
                 return {"error": f"Second image required for {method}"}
             if output.ndim == 2 and img2.ndim == 3:
@@ -334,10 +432,20 @@ async def process_image(request: Request, upload: UploadFile = File(...), upload
                 output = np.clip(output, 0, 255)
                 output = np.uint8(output)
             elif method == 'LIPadd':
-                output = img + img2 - ((img * img2) / 255)
+                output = img + img2_proc - ((img * img2_proc) / 255)
             elif method == 'LIPsubtract':
-                output = 255 * ((img.astype(np.float32) - img2_proc.astype(np.float32)) / (255 - img2_proc.astype(np.float32)))
+                M =int(form.get("LIPsubtract_M", None))
+                output = M * ((img.astype(np.float32) - img2_proc.astype(np.float32)) / (M - img2_proc.astype(np.float32)))
                 output = np.nan_to_num(output, nan=0.0, posinf=255, neginf=0)
+                output = np.clip(output, 0, 255).astype(np.uint8)
+            elif method == 'LIPmultiply':
+                M =int(form.get("LIPmultiply_M", None))
+                phi_X = lip_phi_g(img, M)
+                phi_Y = lip_phi_g(img2_proc, M)
+                output = lip_phi_inverse((phi_X * phi_Y), M)
+                output = output - output.min()
+                output = (output / output.max()) * 255
+                output = output.astype(np.uint8)
                 output = np.clip(output, 0, 255).astype(np.uint8)
             elif method == 'LIPdivide':
                 img_f = img.astype(np.float32) / 255
@@ -355,12 +463,13 @@ async def process_image(request: Request, upload: UploadFile = File(...), upload
             return {"error": f"Unknown method '{method}'"}
         cls = DIP_CLASSES[method]()
         kwargs = {}
-        for suffix in ["gamma", "thresh", "threshold1", "threshold2", "k", "window_size", "kernel_size", "c"]:
+        for suffix in ["gamma", "thresh", "threshold1", "threshold2", "k", "window_size", "kernel_size", "const", "enhance", "amp", "NLEAlpha", "NLEBeta",
+                       "dhvtPlane", "logralpha", "logrbeta", "logrlam"]:
             field = f"{method}_{suffix}"
             if field in form:
                 val = form.get(field)
                 try:
-                    if suffix in ['gamma', 'k', 'c']:
+                    if suffix in ['gamma', 'k', 'const', "NLEAlpha", "NLEBeta", "logralpha", "logrbeta", "logrlam"]:
                         kwargs[suffix] = float(val)
                     else:
                         kwargs[suffix] = int(val)
