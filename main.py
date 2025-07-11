@@ -425,8 +425,8 @@ async def process_image(request: Request, upload: UploadFile = File(...), upload
                 output = cv2.add(output, img2_proc)
             elif method == 'subtract':
                 output = cv2.subtract(output, img2_proc)
-            elif method == 'multiply':    
-                output = cv2.multiply(output, img2_proc)
+            elif method == 'multiply':
+                output = cv2.multiply(output, img2_proc, scale=1.0/255.0)
             elif method == 'divide':
                 output = cv2.divide(output, img2_proc, scale=16.0)
                 output = np.clip(output, 0, 255)
