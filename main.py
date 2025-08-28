@@ -399,8 +399,7 @@ async def process_image(request: Request, upload: UploadFile = File(...), upload
         'multiply' in methods or
         'LIPadd' in methods or
         'LIPsubtract' in methods or
-        'LIPmultiply' in methods or
-        'LIPdivide' in methods) and upload2 is not None:
+        'LIPmultiply' in methods) and upload2 is not None:
         contents2 = await upload2.read()
         np_arr2 = np.frombuffer(contents2, np.uint8)
         img2 = cv2.imdecode(np_arr2, cv2.IMREAD_UNCHANGED)
@@ -411,7 +410,7 @@ async def process_image(request: Request, upload: UploadFile = File(...), upload
 
     output = img
     for method in methods:
-        if method in ('add', 'subtract', 'multiply', 'divide', 'LIPadd', 'LIPsubtract','LIPmultiply', 'LIPdivide'):
+        if method in ('add', 'subtract', 'multiply', 'divide', 'LIPadd', 'LIPsubtract','LIPmultiply'):
             if img2 is None:
                 return {"error": f"Second image required for {method}"}
             if output.ndim == 2 and img2.ndim == 3:
@@ -446,16 +445,6 @@ async def process_image(request: Request, upload: UploadFile = File(...), upload
                 output = output - output.min()
                 output = (output / output.max()) * 255
                 output = output.astype(np.uint8)
-                output = np.clip(output, 0, 255).astype(np.uint8)
-            elif method == 'LIPdivide':
-                img_f = img.astype(np.float32) / 255
-                img2_f = img2_proc.astype(np.float32) / 255
-                la = np.log1p(-img_f)
-                lb = np.log1p(-img2_f)
-                denom = la + lb
-                j = np.where(denom != 0, la / denom, 0.5)
-                result = 255 * (1 - np.power(1 - img_f, j) * np.power(1 - img2_f, 1 - j))
-                output = np.nan_to_num(result, nan=0.0, posinf=255, neginf=0)
                 output = np.clip(output, 0, 255).astype(np.uint8)
             continue
 
